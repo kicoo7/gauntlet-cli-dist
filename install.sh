@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Install or upgrade the Gauntlet toolkit into ~/.claude/skills/gauntlet-cli.
+# Install or upgrade the Gauntlet toolkit into ~/.claude/skills/gauntlet-cli, and put a `gauntlet` command on the
+# PATH: a link in ~/.local/bin to the toolkit's launcher.
 #
 #   curl -fsSL https://raw.githubusercontent.com/kicoo7/gauntlet-cli-dist/main/install.sh | bash
 #
@@ -9,14 +10,20 @@
 # until a downloaded tree has passed its checksum and been confirmed to be a toolkit, and any failure after that
 # point puts the previous install back.
 #
-# Two environment variables, both defaulted, exist so this can be tested and rehosted without editing it:
+# The link names the launcher by the toolkit's own path, which every upgrade keeps, so it never needs replacing.
+# A `gauntlet` already there that is not such a link is somebody's own and is left alone. The command never fails
+# the install: the toolkit also runs by its path, and whatever is left to do is printed last.
+#
+# Three environment variables, all defaulted, exist so this can be tested and rehosted without editing it:
 #   GAUNTLET_DIST_URL    where the archive and its checksum come from
 #   GAUNTLET_SKILL_DIR   where the toolkit is installed
+#   GAUNTLET_BIN_DIR     where the `gauntlet` command is put
 #
 set -euo pipefail
 
 DIST_URL="${GAUNTLET_DIST_URL:-https://github.com/kicoo7/gauntlet-cli-dist/releases/latest/download}"
 SKILL_DIR="${GAUNTLET_SKILL_DIR:-$HOME/.claude/skills/gauntlet-cli}"
+BIN_DIR="${GAUNTLET_BIN_DIR:-$HOME/.local/bin}"
 ARCHIVE="gauntlet-cli.tar.gz"
 
 WORK=""
@@ -96,6 +103,20 @@ fi
 STAGING=""
 if [ -n "$BACKUP" ]; then rm -rf "$BACKUP"; BACKUP=""; fi
 
+# ---- the command: past this point nothing can fail the install, which is already in place
+LAUNCHER="$SKILL_DIR/tools/gauntlet"
+case "$LAUNCHER" in /*) ;; *) LAUNCHER="$PWD/$LAUNCHER" ;; esac   # the link is read from another directory
+LINK="$BIN_DIR/gauntlet"
+if [ -L "$LINK" ] && [ "$LINK" -ef "$LAUNCHER" ]; then
+    linked=yes                                  # from an earlier install, or made by hand: either way, this one
+elif [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    linked=theirs
+elif mkdir -p "$BIN_DIR" 2>/dev/null && ln -s "$LAUNCHER" "$LINK" 2>/dev/null; then
+    linked=yes
+else
+    linked=no
+fi
+
 # ---- report, then let the toolkit speak for itself
 if [ -n "$old" ]; then
     printf '· %s → %s\n' "$old" "$new"
@@ -103,4 +124,37 @@ else
     printf '· installed %s\n' "$new"
 fi
 printf '· %s\n' "$SKILL_DIR"
+if [ "$linked" = yes ]; then printf '· %s\n' "$LINK"; fi
 "$SKILL_DIR/tools/gate" version
+
+# ---- what is left to do, last, where it is read
+if [ "$linked" = yes ]; then
+    found="$(command -v gauntlet 2>/dev/null || true)"
+    if [ -z "$found" ]; then
+        case "$BIN_DIR" in
+            "$HOME"/*) shown="\$HOME/${BIN_DIR#"$HOME"/}" ;;
+            *) shown="$BIN_DIR" ;;
+        esac
+        printf '\n%s is not on your PATH, so typing `gauntlet` finds nothing yet. Add this line to\n' "$BIN_DIR"
+        printf '~/.zshenv (zsh) or to the top of ~/.bashrc (bash), then open a new terminal:\n\n'
+        printf '    export PATH="%s:$PATH"\n' "$shown"
+    elif ! [ "$found" -ef "$LAUNCHER" ]; then
+        printf '\n`gauntlet` on your PATH is %s, which comes before %s.\n' "$found" "$LINK"
+        printf 'Remove it, or put %s earlier on your PATH.\n' "$BIN_DIR"
+    fi
+elif [ "$linked" = theirs ]; then
+    printf '\n%s is already there and is not a link to this toolkit, so it was left as it is.\n' "$LINK"
+    printf 'To make `gauntlet` this toolkit, replace it:\n\n    ln -sfn "%s" "%s"\n' "$LAUNCHER" "$LINK"
+else
+    printf '\nCould not create %s, so there is no `gauntlet` command. Run the toolkit by its path,\n' "$LINK"
+    printf '%s, or set GAUNTLET_BIN_DIR to a directory you can write to and install again.\n' "$LAUNCHER"
+fi
+# the alias an earlier README suggested, which a shell runs instead of the command and which only works from the root
+# of a repository
+old_alias="^[[:space:]]*alias[[:space:]]+gauntlet=[\"']?(\\./)?\\.gauntlet/tools/gauntlet"
+for rc in .zshrc .zshenv .zprofile .bashrc .bash_profile .bash_aliases .profile; do
+    if [ -f "$HOME/$rc" ] && grep -Eq "$old_alias" "$HOME/$rc"; then
+        printf '\n%s sets `alias gauntlet=.gauntlet/tools/gauntlet`. A shell runs that instead of the\n' "$HOME/$rc"
+        printf 'command, and it only works from the root of a repository: delete the line, then open a new terminal.\n'
+    fi
+done
